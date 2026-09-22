@@ -251,6 +251,13 @@ def edit_and_curate_newsletter(summarized_videos):
 # =========================================================
 
 def send_to_telegram(text):
+    """
+    발송에 실패하면(네트워크 오류든, 토큰/chat_id가 잘못됐든) 예외를 raise합니다.
+    예전에는 실패해도 print만 하고 조용히 넘어가서, GitHub Actions에는
+    '성공'으로 표시되는데 실제로는 메시지가 안 오는 문제가 있었습니다.
+    이제는 실패 시 main()의 except로 넘어가 실행 자체가 '실패'로 표시되고,
+    notify_error()로 오류 알림도 시도합니다.
+    """
     print("🚀 텔레그램으로 최종 브리핑 뉴스레터 발송 중...")
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 
@@ -260,21 +267,23 @@ def send_to_telegram(text):
         payload = {"chat_id": TELEGRAM_CHAT_ID, "text": chunk, "parse_mode": "Markdown"}
         try:
             res = requests.post(url, json=payload, timeout=30)
+        except requests.exceptions.RequestException as e:
+            raise RuntimeError(f"텔레그램 연동 오류: {e}") from e
+
+        if res.status_code == 200:
+            continue
+
+        # 마크다운 파싱 실패(짝 안 맞는 *, _, [ 등)면 일반 텍스트로 재전송
+        if res.status_code == 400 and "can't parse entities" in res.text:
+            print("   ⚠️ 마크다운 파싱 실패, 일반 텍스트로 재전송...")
+            try:
+                res = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": chunk}, timeout=30)
+            except requests.exceptions.RequestException as e:
+                raise RuntimeError(f"텔레그램 연동 오류: {e}") from e
             if res.status_code == 200:
                 continue
 
-            # 마크다운 파싱 실패(짝 안 맞는 *, _, [ 등)면 일반 텍스트로 재전송
-            if res.status_code == 400 and "can't parse entities" in res.text:
-                print("   ⚠️ 마크다운 파싱 실패, 일반 텍스트로 재전송...")
-                res = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": chunk}, timeout=30)
-                if res.status_code == 200:
-                    continue
-
-            print(f"❌ 발송 실패 (코드 {res.status_code}): {res.text}")
-            return
-        except Exception as e:
-            print(f"❌ 텔레그램 연동 오류: {e}")
-            return
+        raise RuntimeError(f"발송 실패 (코드 {res.status_code}): {res.text}")
 
     print("✨ 텔레그램 뉴스레터 발송 완료!")
 
